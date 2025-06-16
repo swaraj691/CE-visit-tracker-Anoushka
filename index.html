@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>CE Visit Tracker</title>
+  <link href="https://fonts.googleapis.com/css2?family=Roboto&display=swap" rel="stylesheet">
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-auth-compat.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <style>
+    body { font-family: 'Roboto', sans-serif; background: #f8f9fa; margin: 0; padding: 2rem; color: #333; }
+    .container { max-width: 1000px; margin: auto; background: #fff; padding: 2rem; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+    h2 { display: flex; align-items: center; justify-content: space-between; font-size: 1.5rem; margin-bottom: 1.25rem; }
+    h2 > div button { margin-left: 10px; }
+    .card { background: #f9fbfc; padding: 1.25rem; border-radius: 8px; margin-bottom: 2rem; }
+    .input-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; }
+    label { font-weight: 600; display: block; margin-bottom: 0.25rem; }
+    input, textarea, select { width: 100%; padding: 0.5rem; font-size: 0.95rem; border: 1px solid #ccc; border-radius: 6px; }
+    textarea { resize: vertical; }
+    .btn { display: inline-block; padding: 0.5rem 1.2rem; background-color: #007bff; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 0.95rem; margin-top: 1rem; }
+    .btn:hover { background-color: #0056b3; }
+    .btn-secondary { background-color: #6c757d; }
+    .btn-secondary:hover { background-color: #495057; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th, td { padding: 0.6rem; border: 1px solid #e1e5ea; text-align: left; }
+    th { background-color: #f1f3f5; font-weight: 600; }
+    td button.edit-btn { background: none; border: none; color: #007bff; cursor: pointer; margin-left: 0.5rem; }
+    #ackModal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.5); z-index: 1000; align-items: center; justify-content: center; }
+    #ackModalContent { background: white; padding: 20px; border-radius: 10px; min-width: 300px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>
+      CE Visit Scheduler
+      <div>
+        <button class="btn btn-secondary" onclick="toggleSort()">Sort by Visit Date 🔽</button>
+        <button class="btn" onclick="downloadExcel()">Download to Excel</button>
+      </div>
+    </h2>
+    <div class="card">
+      <div class="input-grid">
+        <div><label>Case Number</label><input type="text" id="caseNumber" maxlength="10"></div>
+        <div><label>Visit Date (DD / MM)</label><input type="text" id="visitDate" placeholder="e.g. 16 / 06"></div>
+        <div><label>Visit Time</label><input type="time" id="visitTime"></div>
+        <div><label>Remarks</label><textarea id="remarks" rows="3"></textarea></div>
+      </div>
+      <button class="btn" onclick="addCase()">Add Case</button>
+    </div>
+    <table>
+      <thead>
+        <tr><th>Case Number</th><th>Visit Date & Time</th><th>Remarks</th><th>Engineer Acknowledge</th></tr>
+      </thead>
+      <tbody id="caseTableBody"></tbody>
+    </table>
+    <div id="pagination" style="text-align:center; margin-top:1rem;"></div>
+  </div>
+  <div id="ackModal">
+    <div id="ackModalContent">
+      <h3>Select Engineer</h3>
+      <select id="engineerSelect"></select>
+      <div style="margin-top:15px; text-align:right;">
+        <button onclick="submitAcknowledgement()" class="btn">Submit</button>
+        <button onclick="closeAckModal()" class="btn btn-secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+  <audio id="alarmSound" src="https://actions.google.com/sounds/v1/alarms/alarm_clock.ogg" preload="auto" loop></audio>
+  <script>
+    const firebaseConfig = {
+      apiKey: "AIzaSyADPtlZhTtBFYvdHo65Iqe1vrVE43nAHpA",
+      authDomain: "compute-voice.firebaseapp.com",
+      databaseURL: "https://compute-voice-default-rtdb.firebaseio.com",
+      projectId: "compute-voice",
+      storageBucket: "compute-voice.appspot.com",
+      messagingSenderId: "156724977391",
+      appId: "1:156724977391:web:e929b1db55d7402272451a"
+    };
+
+    firebase.initializeApp(firebaseConfig);
+    firebase.auth().signInAnonymously().catch(console.error);
+    const db = firebase.database();
+
+    const engineerList = ["ashutosh-sanjay.tiwari-ext","ajinkya.raje","richa.shree","gauri-narendra.mankhair","shiney.thomas","hritvik.patel","anjum2","siddhesh.verma-ext","yukta.raval-ext","nehru","srushti","mrunal.deepak-shirture","jerusha-dilip.gaikwad","ritik.raina","leonell-leny.john","kashish.singh","pradnya.mane-ext","kenneth.thomas-ext","shreyas-sharad.mithbawkar-ext","omkar-vikas.jagdale-ext","abhisek.das","prachi.mahesh-dawkhar","snehal-vaman.karale","tejashwini.k1","abhilash.yadav1","aniruddh-debashis.sarkar","rutuja.ashish-palaye","sahana.m","kartik.asabe-ext","diya.javeed-kudchi","siya.pardhi"];
+
+    let caseData = [], sortAsc = false, currentPage = 1, ackTargetCase = "", rowsPerPage = 10;
+
+    function addCase() {
+      const cn = caseNumber.value.trim(), vd = visitDate.value.trim(), vt = visitTime.value.trim(), rm = remarks.value.trim();
+      if (!cn || !vd || !vt) return alert("Fill all fields.");
+      const [dd, mm] = vd.split("/").map(s => s.trim());
+      const dt = new Date(`${new Date().getFullYear()}-${mm}-${dd}T${vt}`);
+      db.ref("cases/" + cn).set({ caseNumber: cn, visitDateTime: dt.toISOString(), remarks: rm, engineer: "" });
+      [caseNumber, visitDate, visitTime, remarks].forEach(el => el.value = "");
+    }
+
+    db.ref("cases").on("value", snapshot => {
+      caseData = [];
+      snapshot.forEach(child => {
+        const d = child.val();
+        d.visitDateTimeObj = new Date(d.visitDateTime);
+        caseData.push(d);
+      });
+      renderTable();
+    });
+
+    function renderTable() {
+      const tbody = document.getElementById("caseTableBody");
+      tbody.innerHTML = "";
+      const sorted = [...caseData].sort((a, b) => sortAsc ? a.visitDateTimeObj - b.visitDateTimeObj : b.visitDateTimeObj - a.visitDateTimeObj);
+      sorted.forEach(data => {
+        const row = document.createElement("tr");
+        const dt = data.visitDateTimeObj.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
+        row.innerHTML = `
+          <td>${data.caseNumber} <button class="edit-btn" onclick="editField('${data.caseNumber}', 'caseNumber', '${data.caseNumber}')">🖉</button></td>
+          <td>${dt} <button class="edit-btn" onclick="editDateTime('${data.caseNumber}', '${data.visitDateTime}')">🖉</button></td>
+          <td>${data.remarks || ''} <button class="edit-btn" onclick="editField('${data.caseNumber}', 'remarks', '${(data.remarks || '').replace(/'/g, "\\'")}')">🖉</button></td>
+          <td><button class="btn btn-secondary" onclick="acknowledgeEngineer('${data.caseNumber}')">Acknowledge</button> <span style="margin-left:10px;">${data.engineer || ''}</span></td>`;
+        tbody.appendChild(row);
+      });
+    }
+
+    function editField(caseNumber, field, currentValue) {
+      const updated = prompt(`Edit ${field}:`, currentValue);
+      if (updated && updated !== currentValue) {
+        db.ref("cases/" + caseNumber).update({ [field]: updated });
+      }
+    }
+
+    function editDateTime(caseNumber, iso) {
+      const current = new Date(iso);
+      const newDate = prompt("New date (DD / MM):", `${String(current.getDate()).padStart(2, '0')} / ${String(current.getMonth() + 1).padStart(2, '0')}`);
+      const newTime = prompt("New time (HH:MM):", current.toTimeString().slice(0, 5));
+      if (!newDate || !newTime) return;
+      const [dd, mm] = newDate.split("/").map(s => s.trim());
+      const newDT = new Date(`${current.getFullYear()}-${mm}-${dd}T${newTime}`);
+      if (!isNaN(newDT.getTime())) db.ref("cases/" + caseNumber).update({ visitDateTime: newDT.toISOString(), engineer: "" });
+      else alert("Invalid date/time");
+    }
+
+    function acknowledgeEngineer(caseNumber) {
+      ackTargetCase = caseNumber;
+      const select = document.getElementById("engineerSelect");
+      select.innerHTML = '<option value="">--Select--</option>' + engineerList.map(name => `<option value="${name}">${name}</option>`).join("");
+      document.getElementById("ackModal").style.display = "flex";
+    }
+
+    function submitAcknowledgement() {
+      const engineer = document.getElementById("engineerSelect").value;
+      if (!engineer) return alert("Please select an engineer.");
+      db.ref("cases/" + ackTargetCase).update({ engineer });
+      document.getElementById("ackModal").style.display = "none";
+      const sound = document.getElementById("alarmSound");
+      sound.pause();
+      sound.currentTime = 0;
+    }
+
+    function closeAckModal() {
+      document.getElementById("ackModal").style.display = "none";
+    }
+
+    function downloadExcel() {
+      db.ref("cases").once("value").then(snapshot => {
+        const data = [];
+        snapshot.forEach(child => {
+          const item = child.val();
+          data.push({
+            "Case Number": item.caseNumber,
+            "Visit Date & Time": new Date(item.visitDateTime).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }),
+            "Remarks": item.remarks || '',
+            "Engineer": item.engineer || ''
+          });
+        });
+        const ws = XLSX.utils.json_to_sheet(data);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "CE Visits");
+        XLSX.writeFile(wb, "CE_Visit_Tracker.xlsx");
+      });
+    }
+
+    setInterval(() => {
+      const now = new Date();
+      caseData.forEach(data => {
+        if (data.engineer || data._alarmPlayed) return;
+        const diff = (data.visitDateTimeObj - now) / 60000;
+        if (diff > 9 && diff < 10.5) {
+          const sound = document.getElementById("alarmSound");
+          sound.volume = 1.0;
+          sound.play().catch(() => {});
+          acknowledgeEngineer(data.caseNumber);
+          data._alarmPlayed = true;
+        }
+      });
+    }, 60000);
+
+    window.addEventListener('click', () => {
+      const sound = document.getElementById("alarmSound");
+      sound.play().then(() => sound.pause()).catch(() => {});
+    }, { once: true });
+  </script>
+</body>
+</html>
